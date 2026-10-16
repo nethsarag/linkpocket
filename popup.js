@@ -214,7 +214,7 @@ function renderLogin() {
     render();
   });
   mount(h("main", { class: "screen login" },
-    h("div", { class: "logo" }, icon("link", 40)),
+    h("img", { class: "logo", src: "icons/icon128.png", alt: "LinkPocket", width: 84, height: 84 }),
     h("h1", { text: "LinkPocket" }),
     h("p", { class: "tag", text: "Keep the links and ideas worth sharing." }),
     btn,
