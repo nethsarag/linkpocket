@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "LinkPocket",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6KumDeGi031hfym12hEPyCCgSh7iY3l6ApEasf6VuGPJgkfun6Uuqe155XN8jd+FiWDGIKI/8hyu1IJ24bWacuLo+A9hcDTBzuAvW5q7ocdONpz9K8cjycywcpNf6V1u8VFVoRKUwtGrHVOqZnJNu8b2OuNkqTsriIP3JptHtSxCSay+8fkj3UggA7QOXWHm9reFpMN48Ep7lYytm9vht4y9omMLwIcahO2OY0F+FeiLNM1s/Qskom84oxVDuJx3a7ubvBdbv9rYG3upRXUbtpCO0tGO3H6Q4yVUNk4Wha2gb0OpZAHYBpSnQ1peFW2G/tl5n2d9fTY2HE5om0aqowIDAQAB",
+  "description": "Save links and ideas in folders, and share them with friends and teammates.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LinkPocket",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["identity", "storage", "activeTab"],
+  "host_permissions": [
+    "https://firestore.googleapis.com/*",
+    "https://identitytoolkit.googleapis.com/*",
+    "https://securetoken.googleapis.com/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://firestore.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com; base-uri 'none'; form-action 'none'"
+  }
+}

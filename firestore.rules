@@ -1,0 +1,81 @@
+rules_version = '2';
+
+// Zero Trust: the client is never trusted. Every read and write is authorized here,
+// per request, against the signed-in identity and the folder's own membership list.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    function me() { return request.auth.token.email; }
+
+    // Default deny for everything not listed below.
+    match /{document=**} { allow read, write: if false; }
+
+    match /folders/{fid} {
+
+      function isMember(d)  { return me() in d.memberEmails; }
+      function isOwnerOf(d) { return request.auth.uid == d.ownerUid; }
+      function folderKeysOk() {
+        return request.resource.data.keys().hasOnly(
+          ['name', 'ownerUid', 'ownerEmail', 'memberEmails', 'editorEmails', 'createdAt']);
+      }
+      function folderShapeOk() {
+        let d = request.resource.data;
+        return d.name is string && d.name.size() > 0 && d.name.size() <= 60
+          && d.memberEmails is list && d.memberEmails.size() <= 5          // free plan: 5 people (owner included)
+          && d.editorEmails is list && d.editorEmails.size() <= 5
+          && d.ownerEmail in d.memberEmails
+          && d.editorEmails.hasOnly(d.memberEmails);
+      }
+
+      allow read: if signedIn() && isMember(resource.data);
+
+      allow create: if signedIn()
+        && folderKeysOk() && folderShapeOk()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerEmail == me()
+        && request.resource.data.memberEmails == [me()]
+        && request.resource.data.editorEmails == [];
+
+      // Owner manages the folder and its sharing.
+      // Ownership can never be changed.
+      allow update: if signedIn() && isOwnerOf(resource.data)
+        && folderKeysOk() && folderShapeOk()
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.ownerEmail == resource.data.ownerEmail;
+
+      // A member may remove only themselves (leave the folder).
+      allow update: if signedIn() && isMember(resource.data) && !isOwnerOf(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberEmails', 'editorEmails'])
+        && !(me() in request.resource.data.memberEmails)
+        && !(me() in request.resource.data.editorEmails)
+        && resource.data.memberEmails.hasAll(request.resource.data.memberEmails)
+        && resource.data.editorEmails.hasAll(request.resource.data.editorEmails)
+        && request.resource.data.memberEmails.size() == resource.data.memberEmails.size() - 1;
+
+      allow delete: if signedIn() && isOwnerOf(resource.data);
+
+      match /notes/{nid} {
+        function folder() { return get(/databases/$(database)/documents/folders/$(fid)).data; }
+        function canEdit() { return me() == folder().ownerEmail || me() in folder().editorEmails; }
+        // Fixed slot ids make the free-plan limit (5 notes per folder) unbypassable.
+        function slotOk() { return nid in ['n1', 'n2', 'n3', 'n4', 'n5']; }
+        function noteOk() {
+          let d = request.resource.data;
+          return d.keys().hasOnly(['title', 'text', 'updatedBy', 'updatedAt'])
+            && d.title is string && d.title.size() <= 120
+            && d.text is string && d.text.size() <= 5000
+            && d.updatedBy == me();
+        }
+
+        allow read: if signedIn() && me() in folder().memberEmails;
+        allow create, update: if signedIn() && canEdit() && slotOk() && noteOk();
+        allow delete: if signedIn() && canEdit();
+      }
+    }
+  }
+}
