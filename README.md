@@ -1,4 +1,4 @@
-# LinkPocket (Chromium extension, v0.1)
+# LinkPocket (Chromium extension | Mozilla In Production, v0.1)
 
 Save links and ideas in folders, and share them with friends and teammates.
 No build step: Manifest V3, plain JavaScript modules, Firebase Auth + Firestore through their REST APIs.
