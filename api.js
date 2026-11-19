@@ -50,8 +50,8 @@ const decDoc = (d) => ({
 });
 
 // ---- Authenticated request: no request is trusted without a valid token ----
-async function fs(path, { method = "GET", body, query = "" } = {}) {
-  const token = await getToken();
+async function fs(path, { method = "GET", body, query = "" } = {}, retried = false) {
+  const token = await getToken(retried); // on the retry, force a fresh token
   let r;
   try {
     r = await fetch(`${FS}${path}${query ? "?" + query : ""}`, {
@@ -63,6 +63,8 @@ async function fs(path, { method = "GET", body, query = "" } = {}) {
     throw new ApiError(0, "You're offline. Check your connection.");
   }
   if (r.status === 401) {
+    // The cached token may have just expired or been rotated: refresh once and retry before giving up.
+    if (!retried) return fs(path, { method, body, query }, true);
     await dropSession();
     throw new AuthError("Your session expired. Please sign in again.");
   }

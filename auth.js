@@ -4,14 +4,17 @@ export class AuthError extends Error {}
 
 const SESSION_KEY = "lp_session";
 const SIGNED_OUT_KEY = "lp_signed_out";
+const DRAFT_KEY = "lp_draft";
 
-// Tokens live in chrome.storage.session: memory only, cleared when the browser closes.
+// The session lives in chrome.storage.local, so it survives closing the browser.
+// The long-lived refresh token quietly gets a new ID token whenever the old one expires,
+// so the user signs in once and stays signed in until they press "Sign out".
 async function getSession() {
-  const o = await chrome.storage.session.get(SESSION_KEY);
+  const o = await chrome.storage.local.get(SESSION_KEY);
   return o[SESSION_KEY] || null;
 }
 async function setSession(s) {
-  await chrome.storage.session.set({ [SESSION_KEY]: s });
+  await chrome.storage.local.set({ [SESSION_KEY]: s });
 }
 const publicUser = (s) => ({ uid: s.uid, email: s.email, name: s.name });
 
@@ -71,8 +74,10 @@ export async function signInFlow(interactive) {
   return publicUser(session);
 }
 
+// Explicit sign-out is the only normal way to forget the account.
+// It also removes any unsaved-note backup so it can't leak to the next person.
 export async function signOut() {
-  await chrome.storage.session.remove(SESSION_KEY);
+  await chrome.storage.local.remove([SESSION_KEY, DRAFT_KEY]);
   await chrome.storage.local.set({ [SIGNED_OUT_KEY]: true });
 }
 
@@ -86,30 +91,50 @@ export async function currentUser() {
   return s ? publicUser(s) : null;
 }
 
-// Zero trust: every request carries a fresh, short-lived Firebase ID token.
-export async function getToken() {
-  const s = await getSession();
-  if (!s) throw new AuthError("Please sign in.");
-  if (Date.now() < s.expiresAt) return s.idToken;
-  const r = await fetch(`https://securetoken.googleapis.com/v1/token?key=${CONFIG.FIREBASE_API_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: s.refreshToken }),
-  });
-  if (!r.ok) {
-    await chrome.storage.session.remove(SESSION_KEY);
+// Several requests can ask for a token at once; they share one refresh call.
+let refreshing = null;
+
+async function refreshSession(s) {
+  let r;
+  try {
+    r = await fetch(`https://securetoken.googleapis.com/v1/token?key=${CONFIG.FIREBASE_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: s.refreshToken }),
+    });
+  } catch {
+    // Offline is not "logged out": keep the saved session and let the user retry.
+    throw new Error("You're offline. Check your connection.");
+  }
+  if (r.status === 400 || r.status === 401) {
+    // Refresh token revoked, expired or account disabled: only now is a new sign-in needed.
+    await dropSession();
     throw new AuthError("Your session expired. Please sign in again.");
   }
+  if (!r.ok) throw new Error("Couldn't refresh your sign-in. Try again.");
   const d = await r.json();
-  await setSession({
+  const next = {
     ...s,
     idToken: d.id_token,
     refreshToken: d.refresh_token || s.refreshToken,
     expiresAt: Date.now() + (Number(d.expires_in) - 60) * 1000,
+  };
+  await setSession(next);
+  return next.idToken;
+}
+
+// Zero trust: every request carries a fresh, short-lived Firebase ID token.
+// Pass force = true to refresh even if the cached token looks valid.
+export async function getToken(force = false) {
+  const s = await getSession();
+  if (!s) throw new AuthError("Please sign in.");
+  if (!force && Date.now() < s.expiresAt) return s.idToken;
+  refreshing ??= refreshSession(s).finally(() => {
+    refreshing = null;
   });
-  return d.id_token;
+  return refreshing;
 }
 
 export async function dropSession() {
-  await chrome.storage.session.remove(SESSION_KEY);
+  await chrome.storage.local.remove(SESSION_KEY);
 }

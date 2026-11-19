@@ -161,3 +161,7 @@ input:focus, textarea:focus { outline: none; }
   .screen.push, .screen.pop, .overlay, .sheet, .sheet.out { animation: none; }
   #toast { transition: none; }
 }
+
+/* autosave status line under the note fields */
+.save-status { min-height: 18px; }
+.save-status.err { color: var(--red); }

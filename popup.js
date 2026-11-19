@@ -128,15 +128,19 @@ async function loadNotes() {
 }
 
 /* ---------- sheets ---------- */
-function openSheet(build) {
+function openSheet(build, onClose) {
   const overlay = h("div", { class: "overlay" });
   const sheet = h("div", { class: "sheet", role: "dialog", "aria-modal": "true" });
   overlay.append(sheet);
   const onKey = (e) => e.key === "Escape" && close();
+  let closed = false;
   function close() {
+    if (closed) return; // Escape, backdrop click and buttons can all fire; run once
+    closed = true;
     document.removeEventListener("keydown", onKey);
     sheet.classList.add("out");
     setTimeout(() => overlay.remove(), 180);
+    onClose?.(); // lets a sheet save pending work however it was closed
   }
   document.addEventListener("keydown", onKey);
   overlay.addEventListener("click", (e) => e.target === overlay && close());
@@ -368,74 +372,184 @@ async function leaveFolder() {
   render();
 }
 
-/* ---------- note sheet ---------- */
-function noteSheet(note) {
+/* ---------- note sheet (with autosave) ---------- */
+const AUTOSAVE_MS = 900; // save this long after the last keystroke
+const DRAFT_KEY = "lp_draft"; // on-device backup, so nothing is lost if the popup closes mid-edit
+const DRAFT_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+
+const saveDraft = (d) =>
+  chrome.storage.local.set({ [DRAFT_KEY]: { ...d, uid: S.me.uid, ts: Date.now() } }).catch(() => {});
+const clearDraft = () => chrome.storage.local.remove(DRAFT_KEY).catch(() => {});
+async function readDraft() {
+  try {
+    const d = (await chrome.storage.local.get(DRAFT_KEY))[DRAFT_KEY];
+    if (!d || d.uid !== S.me?.uid) return null;
+    if (Date.now() - d.ts > DRAFT_MAX_AGE) return void (await clearDraft());
+    return d;
+  } catch {
+    return null;
+  }
+}
+
+function noteSheet(initialNote, draft = null) {
   const folder = S.folder;
   const editable = canEdit(folder);
-  const isNew = !note;
-  let mode = isNew ? "edit" : "view";
-  openSheet((sheet, close) => {
-    function drawView() {
-      sheet.replaceChildren(
-        sbar(textBtn("Close", close), "Note", editable ? textBtn("Edit", () => { mode = "edit"; draw(); }, true) : null),
-        h("div", { class: "sheet-body" },
-          h("h2", { class: "note-title", text: note.title || "Untitled" }),
-          h("div", { class: "note-text" }, linkify(note.text || "")),
-          note.updatedBy && h("p", { class: "meta", text: `Last edited by ${note.updatedBy}` }),
-          h("div", { class: "sect" }, h("div", { class: "group" },
-            h("button", { class: "row action", onclick: () => copyText(note.text || "") }, h("span", { class: "lead" }, icon("copy", 18)), "Copy text"),
-            editable && h("button", { class: "row danger", onclick: () => { close(); confirmSheet({ title: "Delete note", message: "This note will be deleted for everyone with access.", label: "Delete note", onConfirm: async () => { await api.deleteNote(folder.id, note.id); await loadNotes(); render(); } }); } },
-              h("span", { class: "lead" }, icon("trash", 18)), "Delete note")
-          ))
-        )
-      );
+  let note = initialNote; // after the first autosave, a new note becomes a real saved note
+  let slot = note ? note.id : draft?.slot || null;
+  let latest = draft ? { title: draft.title, text: draft.text } : { title: note?.title || "", text: note?.text || "" };
+  let mode = !note || draft ? "edit" : "view";
+  let timer = null;
+  let chain = Promise.resolve(); // saves run one at a time, in order
+  let statusEl = null;
+  let touched = false; // something was saved, so the list needs a refresh on close
+  let failMsg = "";
+  let closeSheet = () => {};
+
+  const setStatus = (msg, err = false) => {
+    if (!statusEl) return;
+    statusEl.textContent = msg;
+    statusEl.classList.toggle("err", err);
+  };
+
+  async function doSave() {
+    if (!S.me) return;
+    const title = latest.title.trim();
+    const text = latest.text;
+    if (!title && !text.trim()) return setStatus("");
+    if (note && title === (note.title || "") && text === (note.text || "")) return void (await clearDraft()); // nothing new
+    if (!slot) slot = freeSlot();
+    if (!slot) {
+      failMsg = `Not saved: free plan limit reached (${LIMITS.notes} notes per folder).`;
+      await clearDraft();
+      return setStatus(failMsg, true);
     }
-    function drawEdit() {
-      const title = h("input", { class: "field", placeholder: "Title", value: note?.title || "", maxlength: "120", "aria-label": "Title" });
-      const text = h("textarea", { class: "field", placeholder: "Paste a link or jot down an idea", maxlength: "5000", "aria-label": "Text" });
-      text.value = note?.text || "";
-      const count = h("p", { class: "sect-f" });
-      const updateCount = () => {
-        const n = findLinks(text.value).filter((l) => safeHref(l.raw)).length;
-        count.textContent = n ? `${n} link${n > 1 ? "s" : ""} detected` : "Links you add become tappable.";
-      };
-      text.addEventListener("input", updateCount);
-      updateCount();
-      const save = async () => {
-        if (!title.value.trim() && !text.value.trim()) return toast("Add a title or some text.");
-        const slot = isNew ? freeSlot() : note.id;
-        if (!slot) return toast(`Free plan limit reached: ${LIMITS.notes} notes per folder.`);
-        close();
-        await act(async () => {
-          await api.saveNote(folder.id, slot, { title: title.value.trim(), text: text.value }, S.me, isNew);
-          await loadNotes();
-          render();
-        });
-      };
-      const useTab = async () => {
-        try {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (!tab?.url || !safeHref(tab.url)) return toast("This page can't be saved.");
-          if (!title.value.trim()) title.value = (tab.title || "").slice(0, 120);
-          text.value = text.value ? text.value + "\n" + tab.url : tab.url;
-          updateCount();
-        } catch {
-          toast("Couldn't read the current tab.");
-        }
-      };
-      sheet.replaceChildren(
-        sbar(textBtn("Cancel", () => (isNew ? close() : ((mode = "view"), draw()))), isNew ? "New note" : "Edit note", textBtn("Save", save, true)),
-        h("div", { class: "sheet-body" },
-          h("div", { class: "sect" }, h("div", { class: "group" }, title, text), count),
-          h("div", { class: "sect" }, h("div", { class: "group" },
-            h("button", { class: "row action", onclick: useTab }, h("span", { class: "lead" }, icon("tab", 18)), "Add current tab")))
-        )
-      );
-      setTimeout(() => (isNew ? title : text).focus(), 50);
+    setStatus("Saving…");
+    await saveDraft({ folderId: folder.id, slot, title: latest.title, text });
+    try {
+      await api.saveNote(folder.id, slot, { title, text }, S.me, !note);
+      note = { id: slot, title, text, updatedBy: S.me.email };
+      touched = true;
+      failMsg = "";
+      const i = S.notes.findIndex((n) => n.id === slot);
+      if (i >= 0) S.notes[i] = note;
+      else S.notes = [...S.notes, note].sort((a, b) => a.id.localeCompare(b.id));
+      if (latest.title.trim() === title && latest.text === text) {
+        await clearDraft();
+        setStatus("All changes saved");
+      }
+    } catch (e) {
+      if (e instanceof api.AuthError) {
+        S.me = null;
+        S.error = e.message;
+        closeSheet();
+        return render();
+      }
+      if (e.status === 409 && !note) {
+        slot = null; // that slot was taken by someone else; pick another next time
+        try { S.notes = await api.listNotes(folder.id); } catch {}
+      }
+      failMsg = "Couldn't save. Your text is backed up on this device.";
+      setStatus(`${e.message} Your text is backed up on this device.`, true);
     }
-    const draw = () => (mode === "edit" ? drawEdit() : drawView());
-    draw();
-  });
+  }
+  const persist = () => (chain = chain.catch(() => {}).then(doSave));
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(persist, AUTOSAVE_MS);
+  };
+
+  openSheet(
+    (sheet, close) => {
+      closeSheet = close;
+      function drawView() {
+        statusEl = null;
+        sheet.replaceChildren(
+          sbar(textBtn("Close", close), "Note", editable ? textBtn("Edit", () => { mode = "edit"; draw(); }, true) : null),
+          h("div", { class: "sheet-body" },
+            h("h2", { class: "note-title", text: note.title || "Untitled" }),
+            h("div", { class: "note-text" }, linkify(note.text || "")),
+            note.updatedBy && h("p", { class: "meta", text: `Last edited by ${note.updatedBy}` }),
+            h("div", { class: "sect" }, h("div", { class: "group" },
+              h("button", { class: "row action", onclick: () => copyText(note.text || "") }, h("span", { class: "lead" }, icon("copy", 18)), "Copy text"),
+              editable && h("button", { class: "row danger", onclick: () => { close(); confirmSheet({ title: "Delete note", message: "This note will be deleted for everyone with access.", label: "Delete note", onConfirm: async () => { await api.deleteNote(folder.id, note.id); await loadNotes(); render(); } }); } },
+                h("span", { class: "lead" }, icon("trash", 18)), "Delete note")
+            ))
+          )
+        );
+      }
+      function drawEdit() {
+        const title = h("input", { class: "field", placeholder: "Title", value: latest.title, maxlength: "120", "aria-label": "Title" });
+        const text = h("textarea", { class: "field", placeholder: "Paste a link or jot down an idea", maxlength: "5000", "aria-label": "Text" });
+        text.value = latest.text;
+        const count = h("p", { class: "sect-f" });
+        const status = h("p", { class: "sect-f save-status", role: "status" });
+        statusEl = status;
+        setStatus(draft ? "Recovered your unsaved draft. Saving…" : "Changes save automatically.");
+        const updateCount = () => {
+          const n = findLinks(text.value).filter((l) => safeHref(l.raw)).length;
+          count.textContent = n ? `${n} link${n > 1 ? "s" : ""} detected` : "Links you add become tappable.";
+        };
+        const onEdit = () => {
+          latest = { title: title.value, text: text.value };
+          if (latest.title.trim() || latest.text.trim()) saveDraft({ folderId: folder.id, slot, ...latest });
+          else clearDraft();
+          setStatus("Unsaved changes…");
+          schedule();
+        };
+        title.addEventListener("input", onEdit);
+        text.addEventListener("input", () => { updateCount(); onEdit(); });
+        updateCount();
+        const useTab = async () => {
+          try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (!tab?.url || !safeHref(tab.url)) return toast("This page can't be saved.");
+            if (!title.value.trim()) title.value = (tab.title || "").slice(0, 120);
+            text.value = text.value ? text.value + "\n" + tab.url : tab.url;
+            updateCount();
+            onEdit();
+          } catch {
+            toast("Couldn't read the current tab.");
+          }
+        };
+        sheet.replaceChildren(
+          sbar(null, note ? "Edit note" : "New note", textBtn("Done", close, true)),
+          h("div", { class: "sheet-body" },
+            h("div", { class: "sect" }, h("div", { class: "group" }, title, text), count, status),
+            h("div", { class: "sect" }, h("div", { class: "group" },
+              h("button", { class: "row action", onclick: useTab }, h("span", { class: "lead" }, icon("tab", 18)), "Add current tab")))
+          )
+        );
+        setTimeout(() => (note || draft ? text : title).focus(), 50);
+        if (draft) schedule(); // save the recovered draft right away
+      }
+      const draw = () => (mode === "edit" ? drawEdit() : drawView());
+      draw();
+    },
+    // Runs however the sheet closes (Done, Escape, tapping outside): flush, then refresh the list.
+    async () => {
+      clearTimeout(timer);
+      await persist();
+      if (touched && S.me && S.folder?.id === folder.id) {
+        await loadNotes();
+        render();
+      }
+      if (failMsg && S.me) toast(failMsg);
+    }
+  );
+}
+
+/* ---------- restore an unsaved note after the popup was closed mid-edit ---------- */
+async function restoreDraft() {
+  const d = await readDraft();
+  if (!d || !S.me || !S.folders.length) return;
+  const f = S.folders.find((x) => x.id === d.folderId);
+  if (!f || !canEdit(f)) return void (await clearDraft());
+  S.folder = f;
+  S.notes = [];
+  await loadNotes();
+  if (!S.folder || !S.me) return;
+  render();
+  noteSheet(S.notes.find((n) => n.id === d.slot) || null, d);
 }
 
 /* ---------- share sheet ---------- */
@@ -508,7 +622,7 @@ function shareSheet() {
 
 /* ---------- boot ---------- */
 async function boot() {
-  S.me = await api.currentUser();
+  S.me = await api.currentUser(); // cached account: no login needed after the first time
   if (!S.me && !(await api.wasSignedOut())) {
     try {
       S.me = await api.signIn(false); // silent re-sign-in when Google already has a session
@@ -519,6 +633,9 @@ async function boot() {
   if (S.me) {
     render(); // show something immediately
     await loadFolders();
+    render();
+    await restoreDraft(); // reopen a note that was being edited when the popup closed
+    return;
   }
   render();
 }
