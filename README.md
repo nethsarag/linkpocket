@@ -26,6 +26,7 @@ No build step: Manifest V3, plain JavaScript modules, Firebase Auth + Firestore 
 | Notes with title + text, links detected | Links become tappable in the note view. Copy buttons copy the text only, never the title. |
 | Add current tab | Fills the note with the page title and URL (uses `activeTab`, no broad tab access). |
 | Sharing by email | Owner adds an email and picks View only or Can edit. The folder appears when that person signs in with that Google email. |
+| New-note notifications | `notify.js` shows a system notification when you add a note (from the popup) and when someone else adds one to a shared folder (`background.js` checks every minute via `chrome.alarms`). First check after sign-in only records existing notes, so old notes never trigger alerts. |
 | Free plan limits | 5 notes per folder, 5 people per folder (owner counts as one). Enforced in `firestore.rules`, not just the UI. |
 
 Data model: `folders/{id}` with `ownerUid, ownerEmail, memberEmails[], editorEmails[]`, and `folders/{id}/notes/n1…n5`.
@@ -46,7 +47,7 @@ Fixed note ids `n1`–`n5` are what make the 5-note limit impossible to bypass f
 
 - Invites work for any Google email, including people who haven't installed LinkPocket yet. This avoids letting users look up who has an account.
 - Timestamps (`createdAt`, `updatedAt`) come from the client. Switch to server timestamps before building anything that depends on them.
-- Updates appear when the popup opens or you navigate. Live updates would need a listener or polling.
+- The popup refreshes when it opens or you navigate. Shared-note notifications use a 1-minute background check, so they can arrive up to about a minute late.
 - Add Firebase **App Check** and **audit logging** (Cloud Functions) before launch.
 - For paid plans, move limits into Cloud Functions plus custom claims so the plan itself is also server-controlled.
 - Firefox is a separate port: `chrome.identity.launchWebAuthFlow` exists there, but the manifest needs `browser_specific_settings` and a background script instead of a service worker.

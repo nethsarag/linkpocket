@@ -1,4 +1,5 @@
 import * as api from "./api.js";
+import { notifyNewNote } from "./notify.js";
 
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
@@ -427,7 +428,9 @@ function noteSheet(initialNote, draft = null) {
     await saveDraft({ folderId: folder.id, slot, title: latest.title, text });
     try {
       await api.saveNote(folder.id, slot, { title, text }, S.me, !note);
+      const wasNew = !note;
       note = { id: slot, title, text, updatedBy: S.me.email };
+      if (wasNew) notifyNewNote(folder.name, note, S.me.email, true);
       touched = true;
       failMsg = "";
       const i = S.notes.findIndex((n) => n.id === slot);

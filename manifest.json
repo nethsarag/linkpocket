@@ -24,7 +24,13 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["identity", "storage", "activeTab"],
+  "permissions": [
+    "identity",
+    "storage",
+    "activeTab",
+    "notifications",
+    "alarms"
+  ],
   "host_permissions": [
     "https://firestore.googleapis.com/*",
     "https://identitytoolkit.googleapis.com/*",
