@@ -1,4 +1,4 @@
-# LinkPocket (Chromium extension | Mozilla In Production, v0.1)
+# LinkPocket (Chromium extension | Mozilla In Production, v0.2)
 
 Save links and ideas in folders, and share them with friends and teammates.
 No build step: Manifest V3, plain JavaScript modules, Firebase Auth + Firestore through their REST APIs.
@@ -27,10 +27,23 @@ No build step: Manifest V3, plain JavaScript modules, Firebase Auth + Firestore 
 | Add current tab | Fills the note with the page title and URL (uses `activeTab`, no broad tab access). |
 | Sharing by email | Owner adds an email and picks View only or Can edit. The folder appears when that person signs in with that Google email. |
 | New-note notifications | `notify.js` shows a system notification when you add a note (from the popup) and when someone else adds one to a shared folder (`background.js` checks every minute via `chrome.alarms`). First check after sign-in only records existing notes, so old notes never trigger alerts. |
-| Free plan limits | 5 notes per folder, 5 people per folder (owner counts as one). Enforced in `firestore.rules`, not just the UI. |
+| Offline mode | Everything you've opened is saved on the device and readable offline. Edits made offline (new/edited/deleted notes, folders, sharing changes) go into a durable queue and sync automatically when you're back online: when the browser reports it, when the popup opens, or via the background check. A small banner shows "Offline" and how many changes are waiting. Code: `api.js` (cache + queue), `background.js` (background sync). |
+| No plan limits | Unlimited folders, notes per folder, and people per folder. The old 5-note / 5-person caps are gone from the UI and from `firestore.rules`. |
 
-Data model: `folders/{id}` with `ownerUid, ownerEmail, memberEmails[], editorEmails[]`, and `folders/{id}/notes/n1…n5`.
-Fixed note ids `n1`–`n5` are what make the 5-note limit impossible to bypass from a modified client.
+Data model: `folders/{id}` with `ownerUid, ownerEmail, memberEmails[], editorEmails[]`, and `folders/{id}/notes/{id}` (`title, text, updatedBy, updatedAt, createdAt`).
+Folder and note ids are random, generated on the device, which is what lets them be created offline. Existing notes (`n1`–`n5`) keep working.
+
+## Upgrading from v0.1
+
+**Republish `firestore.rules`** (Firebase console → Firestore → Rules → paste → Publish). Without this the server still enforces the old 5-note / 5-person limits and rejects new notes.
+
+## Offline details
+
+- Sign in once while online; after that the session is kept on the device and the extension opens and works with no connection. First-ever sign-in needs internet.
+- A folder's notes are available offline once they've been loaded once while online (the popup and background check do this automatically).
+- If two people edit the same note while one is offline, the last change to reach the server wins.
+- If a queued change is refused when it syncs (for example your access was removed), it is dropped and you get a notice.
+- Signing out deletes everything stored on the device, including unsynced changes (you're warned first).
 
 ## Zero Trust: what is in place
 
@@ -38,7 +51,7 @@ Fixed note ids `n1`–`n5` are what make the 5-note limit impossible to bypass f
 - **Verify explicitly.** Each request carries a short-lived Firebase ID token (refreshed about hourly). Rules require a verified Google email.
 - **Least privilege.** Viewers can read only. Editors can change notes only. Only the owner can share, rename, or delete a folder, and ownership can't be transferred or forged. Members can only remove themselves.
 - **Default deny.** Anything not explicitly allowed in the rules is refused.
-- **Minimal extension permissions:** `identity`, `storage`, `activeTab`, and three Google API hosts. No content scripts, no `<all_urls>`.
+- **Minimal extension permissions:** `identity`, `storage`, `unlimitedStorage` (offline copies), `activeTab`, `notifications`, `alarms`, and three Google API hosts. No content scripts, no `<all_urls>`.
 - **Strict CSP:** scripts and styles only from the extension itself, network only to the three Firebase endpoints.
 - **No injection path:** the UI never uses `innerHTML`; note text is always inserted as text, and only `http(s)` links become clickable.
 - **Tokens stay in memory:** kept in `chrome.storage.session`, wiped when the browser closes. Signing out blocks silent re-login.

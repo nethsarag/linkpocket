@@ -26,15 +26,17 @@ service cloud.firestore {
       function folderShapeOk() {
         let d = request.resource.data;
         return d.name is string && d.name.size() > 0 && d.name.size() <= 60
-          && d.memberEmails is list && d.memberEmails.size() <= 5          // free plan: 5 people (owner included)
-          && d.editorEmails is list && d.editorEmails.size() <= 5
+          && d.memberEmails is list                                         // no cap on people
+          && d.editorEmails is list
           && d.ownerEmail in d.memberEmails
           && d.editorEmails.hasOnly(d.memberEmails);
       }
 
       allow read: if signedIn() && isMember(resource.data);
 
+      // Ids are made on the device (so folders can be created offline): plain letters, digits, - and _.
       allow create: if signedIn()
+        && fid.matches('^[A-Za-z0-9_-]{1,64}$')
         && folderKeysOk() && folderShapeOk()
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.ownerEmail == me()
@@ -62,18 +64,19 @@ service cloud.firestore {
       match /notes/{nid} {
         function folder() { return get(/databases/$(database)/documents/folders/$(fid)).data; }
         function canEdit() { return me() == folder().ownerEmail || me() in folder().editorEmails; }
-        // Fixed slot ids make the free-plan limit (5 notes per folder) unbypassable.
-        function slotOk() { return nid in ['n1', 'n2', 'n3', 'n4', 'n5']; }
+        // No cap on notes. Ids are made on the device (so notes can be created offline).
+        function idOk() { return nid.matches('^[A-Za-z0-9_-]{1,64}$'); }
         function noteOk() {
           let d = request.resource.data;
-          return d.keys().hasOnly(['title', 'text', 'updatedBy', 'updatedAt'])
+          return d.keys().hasOnly(['title', 'text', 'updatedBy', 'updatedAt', 'createdAt'])
+            && (!('createdAt' in d) || d.createdAt is string)
             && d.title is string && d.title.size() <= 120
             && d.text is string && d.text.size() <= 5000
             && d.updatedBy == me();
         }
 
         allow read: if signedIn() && me() in folder().memberEmails;
-        allow create, update: if signedIn() && canEdit() && slotOk() && noteOk();
+        allow create, update: if signedIn() && canEdit() && idOk() && noteOk();
         allow delete: if signedIn() && canEdit();
       }
     }

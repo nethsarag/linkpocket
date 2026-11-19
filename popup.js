@@ -3,7 +3,8 @@ import { notifyNewNote } from "./notify.js";
 
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
-const LIMITS = { notes: 5, people: 5 }; // free plan (also enforced server-side by firestore.rules)
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const banner = document.getElementById("banner");
 const TILES = ["#007aff", "#34c759", "#ff9500", "#af52de", "#ff2d55", "#32ade6", "#ff3b30", "#5856d6"];
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
@@ -60,9 +61,25 @@ function toast(msg) {
   toastTimer = setTimeout(() => toastEl.classList.remove("show"), 1900);
 }
 
+// Shows "Offline" and how many changes are waiting to sync.
+async function updateSync() {
+  if (!S.me) return banner.classList.remove("show");
+  try {
+    const { offline, pending } = await api.syncInfo();
+    const off = offline || !navigator.onLine;
+    const msg = off
+      ? pending ? `Offline · ${plural(pending, "change")} will sync when you're back online` : "Offline · showing what's saved on this device"
+      : pending ? `Syncing ${plural(pending, "change")}…` : "";
+    banner.textContent = msg;
+    banner.classList.toggle("show", !!msg);
+  } catch {}
+}
+
 async function act(fn) {
   try {
-    return await fn();
+    const r = await fn();
+    updateSync();
+    return r;
   } catch (e) {
     if (e instanceof api.AuthError) {
       S.me = null;
@@ -71,6 +88,7 @@ async function act(fn) {
       return;
     }
     toast(e.message || "Something went wrong.");
+    updateSync();
   }
 }
 
@@ -256,12 +274,29 @@ function renderFolders() {
     mine.length ? group("My folders", mine.map(folderRow)) : null,
     shared.length ? group("Shared with me", shared.map(folderRow)) : null,
     h("div", { class: "acct" }, h("div", { text: S.me.email }),
-      h("button", { onclick: async () => { await api.signOut(); S.me = null; S.folders = []; S.folder = null; S.error = ""; render(); }, text: "Sign out" }))
+      h("button", { onclick: requestSignOut, text: "Sign out" }))
   );
   mount(screen);
   screen.querySelectorAll(".tile").forEach((t, i) => {
     const f = [...mine, ...shared][i];
     if (f) t.style.setProperty("background", tileColor(f.id));
+  });
+}
+
+async function doSignOut() {
+  await api.signOut();
+  S.me = null; S.folders = []; S.folder = null; S.error = "";
+  banner.classList.remove("show");
+  render();
+}
+async function requestSignOut() {
+  const { pending } = await api.syncInfo();
+  if (!pending) return doSignOut();
+  confirmSheet({
+    title: "Sign out",
+    message: `${plural(pending, "change")} made offline haven't synced yet and will be lost if you sign out. Go online first to keep them.`,
+    label: "Sign out anyway",
+    onConfirm: doSignOut,
   });
 }
 
@@ -274,16 +309,11 @@ function noteRow(n) {
   );
 }
 
-function freeSlot() {
-  return api.SLOTS.find((id) => !S.notes.some((n) => n.id === id));
-}
-
 function renderFolder() {
   const f = S.folder;
   const editable = canEdit(f);
-  const full = S.notes.length >= LIMITS.notes;
   const rows = S.notes.map(noteRow);
-  if (editable && !full) {
+  if (editable) {
     rows.push(h("button", { class: "row action", onclick: () => noteSheet(null) },
       h("span", { class: "lead" }, icon("plus", 20)), "New note"));
   }
@@ -306,7 +336,7 @@ function renderFolder() {
       group(
         "Notes",
         rows.length ? rows : [h("div", { class: "row" }, h("span", { class: "s", text: editable ? "No notes yet." : "This folder has no notes yet." }))],
-        full ? `Free plan limit reached: ${LIMITS.notes} notes per folder.` : `${S.notes.length} of ${LIMITS.notes} notes`
+        plural(S.notes.length, "note")
       ),
       settings.length ? group(null, settings) : null,
       !isOwner(f) ? group(null, [h("button", { class: "row danger", onclick: () => confirmSheet({ title: "Leave folder", message: "You'll lose access until the owner adds you again.", label: "Leave folder", onConfirm: leaveFolder }) }, "Leave folder")]) : null
@@ -418,18 +448,14 @@ function noteSheet(initialNote, draft = null) {
     const text = latest.text;
     if (!title && !text.trim()) return setStatus("");
     if (note && title === (note.title || "") && text === (note.text || "")) return void (await clearDraft()); // nothing new
-    if (!slot) slot = freeSlot();
-    if (!slot) {
-      failMsg = `Not saved: free plan limit reached (${LIMITS.notes} notes per folder).`;
-      await clearDraft();
-      return setStatus(failMsg, true);
-    }
+    if (!slot) slot = api.newId(); // new notes get their own id on the device, so they can be created offline
     setStatus("Saving…");
     await saveDraft({ folderId: folder.id, slot, title: latest.title, text });
     try {
-      await api.saveNote(folder.id, slot, { title, text }, S.me, !note);
+      const createdAt = note?.createdAt || note?.updatedAt || new Date().toISOString();
+      const saved = await api.saveNote(folder.id, { id: slot, title, text, createdAt }, S.me);
       const wasNew = !note;
-      note = { id: slot, title, text, updatedBy: S.me.email };
+      note = saved;
       if (wasNew) notifyNewNote(folder.name, note, S.me.email, true);
       touched = true;
       failMsg = "";
@@ -438,18 +464,16 @@ function noteSheet(initialNote, draft = null) {
       else S.notes = [...S.notes, note].sort((a, b) => a.id.localeCompare(b.id));
       if (latest.title.trim() === title && latest.text === text) {
         await clearDraft();
-        setStatus("All changes saved");
+        const { pending } = await api.syncInfo();
+        setStatus(pending ? "Saved on this device. Will sync when you're back online." : "All changes saved");
       }
+      updateSync();
     } catch (e) {
       if (e instanceof api.AuthError) {
         S.me = null;
         S.error = e.message;
         closeSheet();
         return render();
-      }
-      if (e.status === 409 && !note) {
-        slot = null; // that slot was taken by someone else; pick another next time
-        try { S.notes = await api.listNotes(folder.id); } catch {}
       }
       failMsg = "Couldn't save. Your text is backed up on this device.";
       setStatus(`${e.message} Your text is backed up on this device.`, true);
@@ -580,7 +604,6 @@ function shareSheet() {
         const email = emailInput.value.trim().toLowerCase();
         if (!EMAIL_RE.test(email)) return toast("Enter a valid email address.");
         if (f.memberEmails.includes(email)) return toast("That person already has access.");
-        if (f.memberEmails.length >= LIMITS.people) return toast(`Free plan limit reached: ${LIMITS.people} people per folder.`);
         await save({
           memberEmails: [...f.memberEmails, email],
           editorEmails: newRole === "edit" ? [...f.editorEmails, email] : f.editorEmails,
@@ -607,7 +630,7 @@ function shareSheet() {
       sheet.replaceChildren(
         sbar(null, "Share folder", textBtn("Done", close, true)),
         h("div", { class: "sheet-body" },
-          group("People with access", people, `${f.memberEmails.length} of ${LIMITS.people} people`),
+          group("People with access", people, plural(f.memberEmails.length, "person").replace("persons", "people")),
           owner() && h("section", { class: "sect" },
             h("h2", { class: "sect-h", text: "Add a person" }),
             h("div", { class: "group" },
@@ -637,9 +660,24 @@ async function boot() {
     render(); // show something immediately
     await loadFolders();
     render();
+    updateSync();
+    api.prefetchNotes(S.folders); // keep every folder's notes readable offline (background, quiet)
+    const dropped = await api.takeDropped();
+    if (dropped) toast(`${plural(dropped, "offline change")} couldn't be saved (access changed).`);
     await restoreDraft(); // reopen a note that was being edited when the popup closed
     return;
   }
   render();
 }
 boot();
+
+// Network comes back: send queued changes and refresh. Going offline: just update the banner.
+window.addEventListener("online", async () => {
+  if (!S.me) return;
+  await loadFolders();
+  if (S.folder) await loadNotes();
+  render();
+  updateSync();
+  api.prefetchNotes(S.folders);
+});
+window.addEventListener("offline", updateSync);

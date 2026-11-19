@@ -154,7 +154,7 @@ input:focus, textarea:focus { outline: none; }
 .mini:active { background: var(--fill); }
 
 /* Toast */
-#toast { position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 12px); background: rgba(60, 60, 67, 0.92); color: #fff; padding: 9px 16px; border-radius: 20px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 40; max-width: 320px; text-align: center; }
+#toast { position: fixed; left: 50%; bottom: 44px; transform: translate(-50%, 12px); background: rgba(60, 60, 67, 0.92); color: #fff; padding: 9px 16px; border-radius: 20px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 40; max-width: 320px; text-align: center; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -165,3 +165,7 @@ input:focus, textarea:focus { outline: none; }
 /* autosave status line under the note fields */
 .save-status { min-height: 18px; }
 .save-status.err { color: var(--red); }
+
+/* Offline / sync status */
+#banner { position: fixed; left: 50%; bottom: 8px; transform: translateX(-50%); max-width: 350px; background: var(--card); color: var(--label2); border: 0.5px solid var(--sep); box-shadow: var(--shadow); padding: 4px 12px; border-radius: 14px; font-size: 12px; text-align: center; z-index: 30; display: none; }
+#banner.show { display: block; }

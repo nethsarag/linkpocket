@@ -4,8 +4,6 @@ export class AuthError extends Error {}
 
 const SESSION_KEY = "lp_session";
 const SIGNED_OUT_KEY = "lp_signed_out";
-const DRAFT_KEY = "lp_draft";
-const SEEN_KEY = "lp_seen_notes";
 
 // The session lives in chrome.storage.local, so it survives closing the browser.
 // The long-lived refresh token quietly gets a new ID token whenever the old one expires,
@@ -76,9 +74,12 @@ export async function signInFlow(interactive) {
 }
 
 // Explicit sign-out is the only normal way to forget the account.
-// It also removes any unsaved-note backup so it can't leak to the next person.
+// It also removes everything saved on the device (unsaved-note backup, offline copies, unsent changes)
+// so none of it can leak to the next person.
 export async function signOut() {
-  await chrome.storage.local.remove([SESSION_KEY, DRAFT_KEY, SEEN_KEY]);
+  const all = await chrome.storage.local.get(null);
+  const mine = Object.keys(all).filter((k) => k.startsWith("lp_") && k !== SIGNED_OUT_KEY);
+  await chrome.storage.local.remove(mine);
   await chrome.storage.local.set({ [SIGNED_OUT_KEY]: true });
 }
 

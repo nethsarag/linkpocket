@@ -45,11 +45,13 @@ async function checkForNewNotes() {
     }
     await chrome.storage.local.set({ [SEEN_KEY]: next });
   } catch {
-    // Offline, expired session or rate limit: try again on the next tick.
+    // Offline, expired session or rate limit: try again on the next tick (queued changes stay saved).
   } finally {
     checking = false;
   }
 }
+// Coming back online: send offline changes and refresh the offline copy right away.
+self.addEventListener("online", () => checkForNewNotes());
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM) checkForNewNotes();
 });
